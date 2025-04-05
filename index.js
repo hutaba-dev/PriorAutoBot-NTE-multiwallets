@@ -326,7 +326,7 @@ async function autoClaimFaucet() {
 
 async function runAutoSwap() {
   promptBox.setFront();
-  promptBox.readInput("Masukkan jumlah iterasi auto swap:", "", async (err, value) => {
+  promptBox.readInput("Masukkan Jumalah Swap:", "", async (err, value) => {
     promptBox.hide();
     safeRender();
     if (err || !value) {
@@ -338,7 +338,7 @@ async function runAutoSwap() {
       addLog("Prior Swap: Input harus berupa angka.", "prior");
       return;
     }
-    addLog(`Prior Swap: Anda memasukkan ${loopCount} iterasi auto swap.`, "prior");
+    addLog(`Prior Swap: Anda Memasukkan ${loopCount} kali auto swap.`, "prior");
    if (priorSwapRunning) {
       addLog("Prior: Transaksi Sedang Berjalan. Silahkan stop transaksi terlebih dahulu.", "rubic");
       return;
@@ -388,7 +388,7 @@ async function runAutoSwap() {
       const paramHex = ethers.zeroPadValue(ethers.toBeHex(amountPrior), 32);
       const txData = functionSelector + paramHex.slice(2);
       try {
-        addLog(`Prior: Melakukan swap PRIOR ➯ ${swapTarget}...`, "prior");
+        addLog(`Prior: Melakukan swap PRIOR ➯ ${swapTarget} Dengan Ammount ${ethers.formatEther(amountPrior)}...`, "prior");
         const tx = await wallet.sendTransaction({
           to: routerAddress,
           data: txData,
