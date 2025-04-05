@@ -388,7 +388,7 @@ async function runAutoSwap() {
       const paramHex = ethers.zeroPadValue(ethers.toBeHex(amountPrior), 32);
       const txData = functionSelector + paramHex.slice(2);
       try {
-        addLog(`Prior: Melakukan swap PRIOR ➯ ${swapTarget}, Ammount ${ethers.formatEther(amountPrior)} Prior...`, "prior");
+        addLog(`Prior: Melakukan swap PRIOR ➯ ${swapTarget}, Ammount ${ethers.formatEther(amountPrior)} PRIOR`, "prior");
         const tx = await wallet.sendTransaction({
           to: routerAddress,
           data: txData,
@@ -412,7 +412,7 @@ async function runAutoSwap() {
         const delay = getRandomDelay();
         const minutes = Math.floor(delay / 60000);
         const seconds = Math.floor((delay % 60000) / 1000);
-        addLog(`Prior: Menunggu ${minutes} menit ${seconds} detik sebelum transaksi berikutnya...`, "prior");
+        addLog(`Prior: Menunggu ${minutes} menit ${seconds} detik sebelum transaksi berikutnya`, "prior");
         await waitWithCancel(delay, "prior");
         if (priorSwapCancelled) {
           addLog("Prior: Auto swap Dihentikan saat waktu tunggu.", "prior");
