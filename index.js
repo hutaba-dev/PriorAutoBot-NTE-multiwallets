@@ -388,7 +388,7 @@ async function runAutoSwap() {
       const paramHex = ethers.zeroPadValue(ethers.toBeHex(amountPrior), 32);
       const txData = functionSelector + paramHex.slice(2);
       try {
-        addLog(`Prior: Melakukan swap PRIOR ➯ ${swapTarget} Dengan Ammount ${ethers.formatEther(amountPrior)}...`, "prior");
+        addLog(`Prior: Melakukan swap PRIOR ➯ ${swapTarget}, Ammount ${ethers.formatEther(amountPrior)} Prior...`, "prior");
         const tx = await wallet.sendTransaction({
           to: routerAddress,
           data: txData,
