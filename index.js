@@ -2,9 +2,11 @@ import "dotenv/config";
 import blessed from "blessed";
 import figlet from "figlet";
 import { ethers } from "ethers";
+import fs from "fs";
+import path from "path";
+import { HttpsProxyAgent } from "https-proxy-agent";
 
-const RPC_URL = process.env.RPC_URL;
-const PRIVATE_KEY = process.env.PRIVATE_KEY;
+const RPC_URL = process.env.RPC_URL || "https://rpc.testnet.prior.network";
 const USDC_ADDRESS = "0x109694D75363A75317A8136D80f50F871E81044e";
 const USDT_ADDRESS = "0x014397DaEa96CaC46DbEdcbce50A42D5e0152B2E";
 const PRIOR_ADDRESS = "0xc19Ec2EEBB009b2422514C51F9118026f1cD89ba";
@@ -12,19 +14,11 @@ const routerAddress = "0x0f1DADEcc263eB79AE3e4db0d57c49a8b6178B0B";
 const FAUCET_ADDRESS = "0xCa602D9E45E1Ed25105Ee43643ea936B8e2Fd6B7";
 const NETWORK_NAME = "PRIOR TESTNET";
 
-let walletInfo = {
-  address: "",
-  balanceETH: "0.00",
-  balancePrior: "0.00",
-  balanceUSDC: "0.00",
-  balanceUSDT: "0.00",
-  network: "Prior Testnet",
-  status: "Initializing"
-};
+let walletInfos = []; // 멀티 월렛 정보
 let transactionLogs = [];
 let priorSwapRunning = false;
 let priorSwapCancelled = false;
-let globalWallet = null;
+let globalWallets = []; // 멀티 지갑 객체
 
 const ERC20_ABI = [
   "function balanceOf(address owner) view returns (uint256)",
@@ -36,18 +30,14 @@ const ERC20_ABI = [
 
 const routerABI = [
   {
-    "inputs": [
-      { "internalType": "uint256", "name": "varg0", "type": "uint256" }
-    ],
+    "inputs": [{ "internalType": "uint256", "name": "varg0", "type": "uint256" }],
     "name": "swapPriorToUSDC",
     "outputs": [],
     "stateMutability": "nonpayable",
     "type": "function"
   },
   {
-    "inputs": [
-      { "internalType": "uint256", "name": "varg0", "type": "uint256" }
-    ],
+    "inputs": [{ "internalType": "uint256", "name": "varg0", "type": "uint256" }],
     "name": "swapPriorToUSDT",
     "outputs": [],
     "stateMutability": "nonpayable",
@@ -62,6 +52,95 @@ const FAUCET_ABI = [
   "function claimAmount() view returns (uint256)"
 ];
 
+// 프록시 매니저 클래스 (http://id:pass@ip:port 형식 지원)
+class ProxyManager {
+  constructor(proxyFilePath) {
+    this.proxyFilePath = proxyFilePath;
+    this.proxies = [];
+    this.loadProxies();
+  }
+
+  loadProxies() {
+    try {
+      if (fs.existsSync(this.proxyFilePath)) {
+        const proxyData = fs.readFileSync(this.proxyFilePath, 'utf8');
+        this.proxies = proxyData.split('\n')
+          .map(proxy => proxy.trim())
+          .filter(proxy => proxy && !proxy.startsWith('#'));
+        addLog(`Loaded ${this.proxies.length} proxies from ${this.proxyFilePath}`, "system");
+      } else {
+        addLog(`Proxy file ${this.proxyFilePath} not found. Proceeding without proxies.`, "warning");
+      }
+    } catch (error) {
+      addLog(`Error loading proxies: ${error.message}`, "error");
+    }
+  }
+
+  getProxy(index) {
+    if (this.proxies.length === 0) return null;
+    return this.proxies[index % this.proxies.length]; // 지갑과 매칭
+  }
+
+  createProxyAgent(proxy) {
+    if (!proxy) return null;
+    const [auth, hostPort] = proxy.includes('@') ? proxy.split('@') : ['', proxy];
+    const [username, password] = auth ? auth.replace('http://', '').split(':') : ['', ''];
+    const [host, port] = hostPort ? hostPort.split(':') : ['', ''];
+    const proxyUrl = username && password ? `http://${username}:${password}@${host}:${port}` : `http://${host}:${port}`;
+    addLog(`Using proxy: ${host}:${port}`, "system");
+    return new HttpsProxyAgent(proxyUrl);
+  }
+}
+
+// 지갑 로드 함수
+function loadWallets(proxyManager) {
+  const walletFilePath = path.join(process.cwd(), "wallets.txt");
+  try {
+    if (fs.existsSync(walletFilePath)) {
+      const walletData = fs.readFileSync(walletFilePath, 'utf8');
+      walletInfos = walletData.split('\n')
+        .map(key => key.trim())
+        .filter(key => key && !key.startsWith('#'))
+        .map((key, index) => ({
+          address: "",
+          balanceETH: "0.00",
+          balancePrior: "0.00",
+          balanceUSDC: "0.00",
+          balanceUSDT: "0.00",
+          network: NETWORK_NAME,
+          status: "Initializing",
+          privateKey: key,
+          proxy: proxyManager.getProxy(index) // 지갑과 프록시 매칭
+        }));
+      addLog(`Loaded ${walletInfos.length} wallets from wallets.txt`, "system");
+    } else if (process.env.PRIVATE_KEY) {
+      walletInfos = [{
+        address: "",
+        balanceETH: "0.00",
+        balancePrior: "0.00",
+        balanceUSDC: "0.00",
+        balanceUSDT: "0.00",
+        network: NETWORK_NAME,
+        status: "Initializing",
+        privateKey: process.env.PRIVATE_KEY,
+        proxy: proxyManager.getProxy(0)
+      }];
+      addLog("Using single wallet from .env PRIVATE_KEY", "system");
+    } else {
+      addLog("No wallets.txt or PRIVATE_KEY found. Please provide wallet data.", "error");
+      process.exit(1);
+    }
+
+    // 프록시와 지갑 수 체크
+    if (proxyManager.proxies.length > 0 && walletInfos.length > proxyManager.proxies.length) {
+      addLog(`Warning: Only ${proxyManager.proxies.length} proxies for ${walletInfos.length} wallets. Some wallets will reuse proxies.`, "warning");
+    }
+  } catch (error) {
+    addLog(`Error loading wallets: ${error.message}`, "error");
+    process.exit(1);
+  }
+}
+
 function getShortAddress(address) {
   return address.slice(0, 6) + "..." + address.slice(-4);
 }
@@ -69,23 +148,17 @@ function getShortAddress(address) {
 function addLog(message, type) {
   const timestamp = new Date().toLocaleTimeString();
   let coloredMessage = message;
-  if (type === "prior") {
-    coloredMessage = `{bright-magenta-fg}${message}{/bright-magenta-fg}`;
-  } else if (type === "system") {
-    coloredMessage = `{bright-white-fg}${message}{/bright-white-fg}`;
-  } else if (type === "error") {
-    coloredMessage = `{bright-red-fg}${message}{/bright-red-fg}`;
-  } else if (type === "success") {
-    coloredMessage = `{bright-green-fg}${message}{/bright-green-fg}`;
-  } else if (type === "warning") {
-    coloredMessage = `{bright-yellow-fg}${message}{/bright-yellow-fg}`;
-  }
+  if (type === "prior") coloredMessage = `{bright-magenta-fg}${message}{/bright-magenta-fg}`;
+  else if (type === "system") coloredMessage = `{bright-white-fg}${message}{/bright-white-fg}`;
+  else if (type === "error") coloredMessage = `{bright-red-fg}${message}{/bright-red-fg}`;
+  else if (type === "success") coloredMessage = `{bright-green-fg}${message}{/bright-green-fg}`;
+  else if (type === "warning") coloredMessage = `{bright-yellow-fg}${message}{/bright-yellow-fg}`;
   transactionLogs.push(`{bright-cyan-fg}[{/bright-cyan-fg} {bold}{grey-fg}${timestamp}{/grey-fg}{/bold} {bright-cyan-fg}]{/bright-cyan-fg} {bold}${coloredMessage}{/bold}`);
   updateLogs();
 }
 
 function getRandomDelay() {
-  return Math.random() * (60000 - 30000) + 30000;
+  return Math.random() * (60000 - 30000) + 30000; // 30~60초
 }
 
 function getRandomNumber(min, max) {
@@ -105,7 +178,7 @@ function updateLogs() {
 function clearTransactionLogs() {
   transactionLogs = [];
   updateLogs();
-  addLog("Transaction logs telah dihapus.", "system");
+  addLog("Transaction logs cleared.", "system");
 }
 
 async function waitWithCancel(delay, type) {
@@ -140,7 +213,7 @@ const headerBox = blessed.box({
   style: { fg: "white", bg: "default" }
 });
 
-figlet.text("NT EXHAUST".toUpperCase(), { font: "ANSI Shadow", horizontalLayout: "default" }, (err, data) => {
+figlet.text("NT EXHAUST".toUpperCase(), { font: "ANSI Shadow" }, (err, data) => {
   if (err) headerBox.setContent("{center}{bold}NT Exhaust{/bold}{/center}");
   else headerBox.setContent(`{center}{bold}{bright-cyan-fg}${data}{/bright-cyan-fg}{/bold}{/center}`);
   safeRender();
@@ -149,7 +222,7 @@ figlet.text("NT EXHAUST".toUpperCase(), { font: "ANSI Shadow", horizontalLayout:
 const descriptionBox = blessed.box({
   left: "center",
   width: "100%",
-  content: "{center}{bold}{bright-yellow-fg}                                                  « ✮  P̳̿͟͞R̳̿͟͞I̳̿͟͞O̳̿͟͞R̳̿͟͞ A̳̿͟͞U̳̿͟͞T̳̿͟͞O̳̿͟͞ B̳̿͟͞O̳̿͟͞T̳̿͟͞ ✮ »{/bright-yellow-fg}{/bold}{/center}",
+  content: "{center}{bold}{bright-yellow-fg}« ✮  P̳̿͟͞R̳̿͟͞I̳̿͟͞O̳̿͟͞R̳̿͟͞ A̳̿͟͞U̳̿͟͞T̳̿͟͞O̳̿͟͞ B̳̿͟͞O̳̿͟͞T̳̿͟͞ ✮ »{/bright-yellow-fg}{/bold}{/center}",
   tags: true,
   style: { fg: "white", bg: "default" }
 });
@@ -170,11 +243,10 @@ const logsBox = blessed.box({
 });
 
 const walletBox = blessed.box({
-  label: " Informasi Wallet ",
+  label: " Wallet Info ",
   border: { type: "line" },
   tags: true,
-  style: { border: { fg: "magenta" }, fg: "white", bg: "default", align: "left", valign: "top" },
-  content: "Loading Data wallet..."
+  style: { border: { fg: "magenta" }, fg: "white", bg: "default" }
 });
 
 const mainMenu = blessed.list({
@@ -223,132 +295,132 @@ screen.append(mainMenu);
 screen.append(priorSubMenu);
 
 function getMainMenuItems() {
-  let items = ["Prior Swap", "Clam Faucet", "Clear Transaction Logs", "Refresh", "Exit"];
-  if (priorSwapRunning) {
-    items.unshift("Stop All Transactions");
-  }
+  let items = ["Prior Swap", "Claim Faucet", "Clear Transaction Logs", "Refresh", "Exit"];
+  if (priorSwapRunning) items.unshift("Stop All Transactions");
   return items;
 }
 
 function getPriorMenuItems() {
   let items = ["Auto Swap Prior & USDC/USDT", "Clear Transaction Logs", "Back To Main Menu", "Refresh"];
-  if (priorSwapRunning) {
-    items.splice(1, 0, "Stop Transaction");
-  }
+  if (priorSwapRunning) items.splice(1, 0, "Stop Transaction");
   return items;
 }
 
 function updateWallet() {
-  const shortAddress = walletInfo.address ? getShortAddress(walletInfo.address) : "N/A";
-  const prior = walletInfo.balancePrior ? Number(walletInfo.balancePrior).toFixed(2) : "0.00";
-  const usdc = walletInfo.balanceUSDC ? Number(walletInfo.balanceUSDC).toFixed(2) : "0.00";
-  const usdt = walletInfo.balanceUSDT ? Number(walletInfo.balanceUSDT).toFixed(2) : "0.00";
-  const eth = walletInfo.balanceETH ? Number(walletInfo.balanceETH).toFixed(4) : "0.000";
-  const content = `┌── Address : {bright-yellow-fg}${shortAddress}{/bright-yellow-fg}
-│   ├── ETH     : {bright-green-fg}${eth}{/bright-green-fg}
-│   ├── PRIOR   : {bright-green-fg}${prior}{/bright-green-fg}
-│   ├── USDC    : {bright-green-fg}${usdc}{/bright-green-fg}
-│   └── USDT    : {bright-green-fg}${usdt}{/bright-green-fg}
-└── Network     : {bright-cyan-fg}${NETWORK_NAME}{/bright-cyan-fg}
-`;
-
+  const content = walletInfos.map((info, index) => {
+    const shortAddress = info.address ? getShortAddress(info.address) : "N/A";
+    const prior = Number(info.balancePrior).toFixed(2);
+    const usdc = Number(info.balanceUSDC).toFixed(2);
+    const usdt = Number(info.balanceUSDT).toFixed(2);
+    const eth = Number(info.balanceETH).toFixed(4);
+    const proxy = info.proxy || "None";
+    return `Wallet ${index + 1}:\n┌── Address : {bright-yellow-fg}${shortAddress}{/bright-yellow-fg}\n│   ├── ETH     : {bright-green-fg}${eth}{/bright-green-fg}\n│   ├── PRIOR   : {bright-green-fg}${prior}{/bright-green-fg}\n│   ├── USDC    : {bright-green-fg}${usdc}{/bright-green-fg}\n│   ├── USDT    : {bright-green-fg}${usdt}{/bright-green-fg}\n│   └── Proxy   : {bright-cyan-fg}${proxy}{/bright-cyan-fg}\n└── Network     : {bright-cyan-fg}${NETWORK_NAME}{/bright-cyan-fg}\n`;
+  }).join("\n");
   walletBox.setContent(content);
   safeRender();
 }
 
-async function updateWalletData() {
-  try {
-    const provider = new ethers.JsonRpcProvider(RPC_URL);
-    const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
-    globalWallet = wallet;
-    walletInfo.address = wallet.address;
+async function updateWalletData(proxyManager) {
+  globalWallets = [];
+  for (let i = 0; i < walletInfos.length; i++) {
+    const providerOptions = { url: RPC_URL };
+    if (walletInfos[i].proxy) {
+      providerOptions.agent = proxyManager.createProxyAgent(walletInfos[i].proxy);
+    }
+    const provider = new ethers.JsonRpcProvider(providerOptions);
+    const wallet = new ethers.Wallet(walletInfos[i].privateKey, provider);
+    globalWallets.push(wallet);
 
-    const [ethBalance, balancePrior, balanceUSDC, balanceUSDT] = await Promise.all([
-      provider.getBalance(wallet.address),
-      new ethers.Contract(PRIOR_ADDRESS, ERC20_ABI, provider).balanceOf(wallet.address),
-      new ethers.Contract(USDC_ADDRESS, ERC20_ABI, provider).balanceOf(wallet.address),
-      new ethers.Contract(USDT_ADDRESS, ERC20_ABI, provider).balanceOf(wallet.address)
-    ]);
+    try {
+      walletInfos[i].address = wallet.address;
+      const [ethBalance, balancePrior, balanceUSDC, balanceUSDT] = await Promise.all([
+        provider.getBalance(wallet.address),
+        new ethers.Contract(PRIOR_ADDRESS, ERC20_ABI, provider).balanceOf(wallet.address),
+        new ethers.Contract(USDC_ADDRESS, ERC20_ABI, provider).balanceOf(wallet.address),
+        new ethers.Contract(USDT_ADDRESS, ERC20_ABI, provider).balanceOf(wallet.address)
+      ]);
 
-    walletInfo.balanceETH = ethers.formatEther(ethBalance);
-    walletInfo.balancePrior = ethers.formatEther(balancePrior);
-    walletInfo.balanceUSDC = ethers.formatUnits(balanceUSDC, 6);
-    walletInfo.balanceUSDT = ethers.formatUnits(balanceUSDT, 6);
-
-    updateWallet();
-    addLog("Saldo & Wallet Updated !!", "system");
-  } catch (error) {
-    addLog("Gagal mengambil data wallet: " + error.message, "system");
+      walletInfos[i].balanceETH = ethers.formatEther(ethBalance);
+      walletInfos[i].balancePrior = ethers.formatEther(balancePrior);
+      walletInfos[i].balanceUSDC = ethers.formatUnits(balanceUSDC, 6);
+      walletInfos[i].balanceUSDT = ethers.formatUnits(balanceUSDT, 6);
+    } catch (error) {
+      addLog(`Wallet ${getShortAddress(wallet.address)}: Failed to update data: ${error.message}`, "error");
+    }
   }
+  updateWallet();
+  addLog("Wallet balances updated!", "system");
 }
 
 function stopAllTransactions() {
   if (priorSwapRunning) {
     priorSwapCancelled = true;
-    addLog("Stop All Transactions command received. Semua transaksi telah dihentikan.", "system");
+    addLog("Stop All Transactions command received.", "system");
   }
 }
 
-async function autoClaimFaucet() {
-    const provider = new ethers.JsonRpcProvider(RPC_URL);
-    const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
-    const faucetContract = new ethers.Contract(FAUCET_ADDRESS, FAUCET_ABI, wallet);
-
-  try {
-    const lastClaim = await faucetContract.lastClaimTime(wallet.address);
-    const cooldown = await faucetContract.claimCooldown();
-    const currentTime = Math.floor(Date.now() / 1000);
-    const nextClaimTime = Number(lastClaim) + Number(cooldown);
-
-    if (currentTime < nextClaimTime) {
-      const waitTime = nextClaimTime - currentTime;
-      const waitHours = Math.floor(waitTime / 3600); 
-      const waitMinutes = Math.floor((waitTime % 3600) / 60);
-      addLog(`You have to wait ${waitHours} Hours ${waitMinutes} minutes before claiming again.`, "warning");
-      return;
+async function autoClaimFaucet(proxyManager) {
+  for (let i = 0; i < globalWallets.length; i++) {
+    const wallet = globalWallets[i];
+    const shortAddress = getShortAddress(wallet.address);
+    const providerOptions = { url: RPC_URL };
+    if (walletInfos[i].proxy) {
+      providerOptions.agent = proxyManager.createProxyAgent(walletInfos[i].proxy);
     }
-    addLog("Starting Claim Faucet PRIOR...", "system");
-    const tx = await faucetContract.claimTokens();
-    const txHash = tx.hash;
-    addLog(`Transaction Sent!!. Hash: ${getShortHash(txHash)}`, "warning");
+    const provider = new ethers.JsonRpcProvider(providerOptions);
+    const signer = wallet.connect(provider);
+    const faucetContract = new ethers.Contract(FAUCET_ADDRESS, FAUCET_ABI, signer);
 
-    const receipt = await tx.wait();
-    if (receipt.status === 1) {
-      addLog("Claim Faucet Successfully!!", "success");
-      await updateWalletData();
-    } else {
-      addLog("Claim Faucet Failed.", "error");
+    try {
+      const lastClaim = await faucetContract.lastClaimTime(wallet.address);
+      const cooldown = await faucetContract.claimCooldown();
+      const currentTime = Math.floor(Date.now() / 1000);
+      const nextClaimTime = Number(lastClaim) + Number(cooldown);
+
+      if (currentTime < nextClaimTime) {
+        const waitTime = nextClaimTime - currentTime;
+        const waitHours = Math.floor(waitTime / 3600);
+        const waitMinutes = Math.floor((waitTime % 3600) / 60);
+        addLog(`Wallet ${shortAddress}: Wait ${waitHours}h ${waitMinutes}m before next claim.`, "warning");
+        continue;
+      }
+
+      addLog(`Wallet ${shortAddress}: Starting Claim Faucet PRIOR...`, "system");
+      const tx = await faucetContract.claimTokens();
+      addLog(`Wallet ${shortAddress}: Tx Sent. Hash: ${getShortHash(tx.hash)}`, "warning");
+      const receipt = await tx.wait();
+      if (receipt.status === 1) {
+        addLog(`Wallet ${shortAddress}: Claim Faucet Successful!`, "success");
+      } else {
+        addLog(`Wallet ${shortAddress}: Claim Faucet Failed.`, "error");
+      }
+    } catch (error) {
+      addLog(`Wallet ${shortAddress}: Error claiming faucet: ${error.message}`, "error");
     }
-  } catch (error) {
-    addLog(`Error When Claiming: ${error.message}`, "error");
   }
+  await updateWalletData(proxyManager);
 }
 
-async function runAutoSwap() {
+async function runAutoSwap(proxyManager) {
   promptBox.setFront();
-  promptBox.readInput("Masukkan Jumalah Swap:", "", async (err, value) => {
+  promptBox.readInput("Masukkan Jumlah Swap per Wallet:", "", async (err, value) => {
     promptBox.hide();
     safeRender();
     if (err || !value) {
-      addLog("Prior Swap: Input tidak valid atau dibatalkan.", "prior");
+      addLog("Prior Swap: Invalid input or cancelled.", "prior");
       return;
     }
     const loopCount = parseInt(value);
     if (isNaN(loopCount)) {
-      addLog("Prior Swap: Input harus berupa angka.", "prior");
+      addLog("Prior Swap: Input must be a number.", "prior");
       return;
     }
-    addLog(`Prior Swap: Anda Memasukkan ${loopCount} kali auto swap.`, "prior");
-   if (priorSwapRunning) {
-      addLog("Prior: Transaksi Sedang Berjalan. Silahkan stop transaksi terlebih dahulu.", "rubic");
-      return;
-    }
-    const provider = new ethers.JsonRpcProvider(RPC_URL);
-    const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
-    globalWallet = wallet;
+    addLog(`Prior Swap: Set to run ${loopCount} swaps per wallet.`, "prior");
 
-    const priorToken = new ethers.Contract(PRIOR_ADDRESS, ERC20_ABI, wallet);
-    const usdcToken = new ethers.Contract(USDC_ADDRESS, ERC20_ABI, provider);
+    if (priorSwapRunning) {
+      addLog("Prior Swap: Transaction already running. Stop it first.", "prior");
+      return;
+    }
 
     priorSwapRunning = true;
     priorSwapCancelled = false;
@@ -357,77 +429,87 @@ async function runAutoSwap() {
     priorSubMenu.show();
     safeRender();
 
-    for (let i = 1; i <= loopCount; i++) {
-      if (priorSwapCancelled) {
-        addLog(`Prior Swap: Auto swap dihentikan pada Cycle Ke ${i}.`, "prior");
-        break;
-      }
+    for (let i = 0; i < globalWallets.length; i++) {
+      if (priorSwapCancelled) break;
 
-      const randomAmount = getRandomNumber(0.001, 0.01);
-      const amountPrior = ethers.parseEther(randomAmount.toFixed(6));
-      const isUSDC = i % 2 === 1;
-      const functionSelector = isUSDC ? "0xf3b68002" : "0x03b530a3";
-      const swapTarget = isUSDC ? "USDC" : "USDT";
-      try {
-        const approveTx = await priorToken.approve(routerAddress, amountPrior);
-        const txHash = approveTx.hash;
-        addLog(`Prior: Approval Transaction dikirim. Hash: ${getShortHash(txHash)}`, "prior");
-        const approveReceipt = await approveTx.wait();
-        if (approveReceipt.status !== 1) {
-          addLog(`Prior: Approval gagal. Melewati Cycle ini.`, "prior");
-          await delay(getRandomNumber(30000, 60000));
-          continue;
-        }
-        addLog(`Prior: Approval berhasil.`, "prior");
-      } catch (approvalError) {
-        addLog(`Prior: Error saat approval: ${approvalError.message}`, "prior");
-        await delay(getRandomNumber(30000, 60000));
-        continue;
-      }
+      const wallet = globalWallets[i];
+      const shortAddress = getShortAddress(wallet.address);
+      addLog(`Wallet ${shortAddress}: Starting auto swap...`, "prior");
 
-      const paramHex = ethers.zeroPadValue(ethers.toBeHex(amountPrior), 32);
-      const txData = functionSelector + paramHex.slice(2);
-      try {
-        addLog(`Prior: Melakukan swap PRIOR ➯ ${swapTarget}, Ammount ${ethers.formatEther(amountPrior)} PRIOR`, "prior");
-        const tx = await wallet.sendTransaction({
-          to: routerAddress,
-          data: txData,
-          gasLimit: 500000
-        });
-        const txHash = tx.hash;
-        addLog(`Prior: Transaksi dikirim. Hash: ${getShortHash(txHash)}`, "prior");
-        const receipt = await tx.wait();
-        if (receipt.status === 1) {
-          addLog(`Prior: Swap PRIOR ➯ ${swapTarget} berhasil.`, "prior");
-          await updateWalletData();
-          addLog(`Prior: Swap Ke  ${i} Selesai.`, "prior");
-        } else {
-          addLog(`Prior: Swap PRIOR ➯ ${swapTarget} gagal.`, "prior");
-        }
-      } catch (txError) {
-        addLog(`Prior Swap: Error saat mengirim transaksi swap: ${txError.message}`, "prior");
+      const providerOptions = { url: RPC_URL };
+      if (walletInfos[i].proxy) {
+        providerOptions.agent = proxyManager.createProxyAgent(walletInfos[i].proxy);
       }
+      const provider = new ethers.JsonRpcProvider(providerOptions);
+      const signer = wallet.connect(provider);
+      const priorToken = new ethers.Contract(PRIOR_ADDRESS, ERC20_ABI, signer);
 
-      if (i < loopCount) {
-        const delay = getRandomDelay();
-        const minutes = Math.floor(delay / 60000);
-        const seconds = Math.floor((delay % 60000) / 1000);
-        addLog(`Prior: Menunggu ${minutes} menit ${seconds} detik sebelum transaksi berikutnya`, "prior");
-        await waitWithCancel(delay, "prior");
+      for (let j = 1; j <= loopCount; j++) {
         if (priorSwapCancelled) {
-          addLog("Prior: Auto swap Dihentikan saat waktu tunggu.", "prior");
+          addLog(`Wallet ${shortAddress}: Auto swap stopped at cycle ${j}.`, "prior");
           break;
         }
+
+        const randomAmount = getRandomNumber(0.001, 0.01);
+        const amountPrior = ethers.parseEther(randomAmount.toFixed(6));
+        const isUSDC = j % 2 === 1;
+        const functionSelector = isUSDC ? "0xf3b68002" : "0x03b530a3";
+        const swapTarget = isUSDC ? "USDC" : "USDT";
+
+        try {
+          const approveTx = await priorToken.approve(routerAddress, amountPrior);
+          addLog(`Wallet ${shortAddress}: Approval Tx Sent. Hash: ${getShortHash(approveTx.hash)}`, "prior");
+          const approveReceipt = await approveTx.wait();
+          if (approveReceipt.status !== 1) {
+            addLog(`Wallet ${shortAddress}: Approval failed. Skipping cycle ${j}.`, "prior");
+            await waitWithCancel(getRandomDelay(), "prior");
+            continue;
+          }
+          addLog(`Wallet ${shortAddress}: Approval successful.`, "prior");
+        } catch (error) {
+          addLog(`Wallet ${shortAddress}: Approval error: ${error.message}`, "prior");
+          await waitWithCancel(getRandomDelay(), "prior");
+          continue;
+        }
+
+        const paramHex = ethers.zeroPadValue(ethers.toBeHex(amountPrior), 32);
+        const txData = functionSelector + paramHex.slice(2);
+        try {
+          addLog(`Wallet ${shortAddress}: Swapping ${ethers.formatEther(amountPrior)} PRIOR → ${swapTarget}`, "prior");
+          const tx = await signer.sendTransaction({
+            to: routerAddress,
+            data: txData,
+            gasLimit: 500000
+          });
+          addLog(`Wallet ${shortAddress}: Tx Sent. Hash: ${getShortHash(tx.hash)}`, "prior");
+          const receipt = await tx.wait();
+          if (receipt.status === 1) {
+            addLog(`Wallet ${shortAddress}: Swap PRIOR → ${swapTarget} successful.`, "prior");
+          } else {
+            addLog(`Wallet ${shortAddress}: Swap failed.`, "prior");
+          }
+        } catch (error) {
+          addLog(`Wallet ${shortAddress}: Swap error: ${error.message}`, "prior");
+        }
+
+        if (j < loopCount) {
+          const delay = getRandomDelay();
+          const minutes = Math.floor(delay / 60000);
+          const seconds = Math.floor((delay % 60000) / 1000);
+          addLog(`Wallet ${shortAddress}: Waiting ${minutes}m ${seconds}s before next swap`, "prior");
+          await waitWithCancel(delay, "prior");
+        }
       }
+      await updateWalletData(proxyManager);
     }
+
     priorSwapRunning = false;
     mainMenu.setItems(getMainMenuItems());
     priorSubMenu.setItems(getPriorMenuItems());
     safeRender();
-    addLog("Prior Swap: Auto swap selesai.", "prior");
+    addLog("Prior Swap: Auto swap completed.", "prior");
   });
 }
-
 
 function adjustLayout() {
   const screenHeight = screen.height;
@@ -460,6 +542,11 @@ function adjustLayout() {
 screen.on("resize", adjustLayout);
 adjustLayout();
 
+// 초기화
+const proxyManager = new ProxyManager(path.join(process.cwd(), "proxies.txt"));
+loadWallets(proxyManager);
+updateWalletData(proxyManager);
+
 mainMenu.on("select", (item) => {
   const selected = item.getText();
   if (selected === "Stop All Transactions") {
@@ -471,14 +558,12 @@ mainMenu.on("select", (item) => {
     priorSubMenu.show();
     priorSubMenu.focus();
     safeRender();
-  } else if (selected === "Clam Faucet") {
-    autoClaimFaucet();
+  } else if (selected === "Claim Faucet") {
+    autoClaimFaucet(proxyManager);
   } else if (selected === "Clear Transaction Logs") {
     clearTransactionLogs();
   } else if (selected === "Refresh") {
-    updateWalletData();
-    updateLogs();
-    safeRender();
+    updateWalletData(proxyManager);
     addLog("Refreshed", "system");
   } else if (selected === "Exit") {
     process.exit(0);
@@ -488,13 +573,13 @@ mainMenu.on("select", (item) => {
 priorSubMenu.on("select", (item) => {
   const selected = item.getText();
   if (selected === "Auto Swap Prior & USDC/USDT") {
-    runAutoSwap();
+    runAutoSwap(proxyManager);
   } else if (selected === "Stop Transaction") {
     if (priorSwapRunning) {
       priorSwapCancelled = true;
-      addLog("Prior Swap: Perintah Stop Transaction diterima.", "prior");
+      addLog("Prior Swap: Stop Transaction command received.", "prior");
     } else {
-      addLog("Prior Swap: Tidak ada transaksi yang berjalan.", "prior");
+      addLog("Prior Swap: No transactions running.", "prior");
     }
   } else if (selected === "Clear Transaction Logs") {
     clearTransactionLogs();
@@ -504,9 +589,7 @@ priorSubMenu.on("select", (item) => {
     mainMenu.focus();
     safeRender();
   } else if (selected === "Refresh") {
-    updateWalletData();
-    updateLogs();
-    safeRender();
+    updateWalletData(proxyManager);
     addLog("Refreshed", "system");
   }
 });
@@ -518,4 +601,3 @@ screen.key(["C-down"], () => { logsBox.scroll(1); safeRender(); });
 safeRender();
 mainMenu.focus();
 updateLogs();
-updateWalletData();
