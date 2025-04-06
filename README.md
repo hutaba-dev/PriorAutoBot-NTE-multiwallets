@@ -6,7 +6,7 @@
 git clone https://github.com/hutaba-dev/PriorAutoBot-NTE-multiwallets
 cd PriorAutoBot-NTE
 ```
-### Isntall dependencies
+### Install dependencies
 ```
 npm install blessed ethers figlet dotenv
 ```
@@ -30,7 +30,7 @@ proxies
 http://id:pass@ip:port
 ```
 
-### run
+### Run
 ```
 node index.js
 ```
