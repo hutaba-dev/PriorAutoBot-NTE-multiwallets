@@ -1,2 +1,2 @@
 # PriorAutoBot-NTE
-Full Tutorial Join https://t.me/NTExhaust
+Full Tutorial Join https://t.me/hutabainfo
