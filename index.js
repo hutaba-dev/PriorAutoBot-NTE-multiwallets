@@ -14,11 +14,11 @@ const routerAddress = "0x0f1DADEcc263eB79AE3e4db0d57c49a8b6178B0B";
 const FAUCET_ADDRESS = "0xCa602D9E45E1Ed25105Ee43643ea936B8e2Fd6B7";
 const NETWORK_NAME = "PRIOR TESTNET";
 
-let walletInfos = []; // 멀티 월렛 정보
+let walletInfos = [];
 let transactionLogs = [];
 let priorSwapRunning = false;
 let priorSwapCancelled = false;
-let globalWallets = []; // 멀티 지갑 객체
+let globalWallets = [];
 
 const ERC20_ABI = [
   "function balanceOf(address owner) view returns (uint256)",
@@ -52,7 +52,6 @@ const FAUCET_ABI = [
   "function claimAmount() view returns (uint256)"
 ];
 
-// 프록시 매니저 클래스 (http://id:pass@ip:port 형식 지원)
 class ProxyManager {
   constructor(proxyFilePath) {
     this.proxyFilePath = proxyFilePath;
@@ -78,7 +77,7 @@ class ProxyManager {
 
   getProxy(index) {
     if (this.proxies.length === 0) return null;
-    return this.proxies[index % this.proxies.length]; // 지갑과 매칭
+    return this.proxies[index % this.proxies.length];
   }
 
   createProxyAgent(proxy) {
@@ -92,7 +91,6 @@ class ProxyManager {
   }
 }
 
-// 지갑 로드 함수
 function loadWallets(proxyManager) {
   const walletFilePath = path.join(process.cwd(), "wallets.txt");
   try {
@@ -110,7 +108,7 @@ function loadWallets(proxyManager) {
           network: NETWORK_NAME,
           status: "Initializing",
           privateKey: key,
-          proxy: proxyManager.getProxy(index) // 지갑과 프록시 매칭
+          proxy: proxyManager.getProxy(index)
         }));
       addLog(`Loaded ${walletInfos.length} wallets from wallets.txt`, "system");
     } else if (process.env.PRIVATE_KEY) {
@@ -131,7 +129,6 @@ function loadWallets(proxyManager) {
       process.exit(1);
     }
 
-    // 프록시와 지갑 수 체크
     if (proxyManager.proxies.length > 0 && walletInfos.length > proxyManager.proxies.length) {
       addLog(`Warning: Only ${proxyManager.proxies.length} proxies for ${walletInfos.length} wallets. Some wallets will reuse proxies.`, "warning");
     }
@@ -158,7 +155,7 @@ function addLog(message, type) {
 }
 
 function getRandomDelay() {
-  return Math.random() * (60000 - 30000) + 30000; // 30~60초
+  return Math.random() * (60000 - 30000) + 30000;
 }
 
 function getRandomNumber(min, max) {
@@ -314,7 +311,7 @@ function updateWallet() {
     const usdt = Number(info.balanceUSDT).toFixed(2);
     const eth = Number(info.balanceETH).toFixed(4);
     const proxy = info.proxy || "None";
-    return `Wallet ${index + 1}:\n┌── Address : {bright-yellow-fg}${shortAddress}{/bright-yellow-fg}\n│   ├── ETH     : {bright-green-fg}${eth}{/bright-green-fg}\n│   ├── PRIOR   : {bright-green-fg}${prior}{/bright-green-fg}\n│   ├── USDC    : {bright-green-fg}${usdc}{/bright-green-fg}\n│   ├── USDT    : {bright-green-fg}${usdt}{/bright-green-fg}\n│   └── Proxy   : {bright-cyan-fg}${proxy}{/bright-cyan-fg}\n└── Network     : {bright-cyan-fg}${NETWORK_NAME}{/bright-cyan-fg}\n`;
+    return `Wallet ${index + 1}:\n┌── Address : {bright-yellow-fg}${shortAddress}{/bright-yellow-fg}\n│   ├── ETH     : {bright-green-fg}${eth}{/bright-green-fg}\n│   ├── PRIOR   : {bright-green-fg}${prior}{/bright-green-fg}\n│   ├── USDC    : {bright-green-fg}${usdc}{/bright-green-fg}\n│   └── USDT    : {bright-green-fg}${usdt}{/bright-green-fg}\n│   └── Proxy   : {bright-cyan-fg}${proxy}{/bright-cyan-fg}\n└── Network     : {bright-cyan-fg}${NETWORK_NAME}{/bright-cyan-fg}\n`;
   }).join("\n");
   walletBox.setContent(content);
   safeRender();
@@ -542,7 +539,6 @@ function adjustLayout() {
 screen.on("resize", adjustLayout);
 adjustLayout();
 
-// 초기화
 const proxyManager = new ProxyManager(path.join(process.cwd(), "proxies.txt"));
 loadWallets(proxyManager);
 updateWalletData(proxyManager);
