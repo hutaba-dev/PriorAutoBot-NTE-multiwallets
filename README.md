@@ -36,3 +36,10 @@ node index.js
 ```
 
 ### special thanks to NTE group
+
+### NOTE
+
+For single wallet, use .env and insert your private key.
+
+Thie code check firstly whether wallets.txt exists or not, if no, load the private key from .env. 
+If there is wallets.txt, no access on .env
